@@ -87,7 +87,9 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
 
   # Writes Formula/nametrail.rb in <owner>/homebrew-tap so `brew install <owner>/tap/nametrail` works.
-  # Skipped until the HOMEBREW_TAP_TOKEN secret (a token that can push to that repository) is set.
+  # Skipped until the HOMEBREW_TAP_TOKEN secret is set: a fine-grained token with access to the
+  # homebrew-tap repository and "Contents: Read and write". Reading alone works on the public tap,
+  # so a read-only token fails only at the push, with a 403.
   homebrew:
     needs: publish
     runs-on: ubuntu-latest
@@ -148,5 +150,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/nametrail.rb
+          # A rerun of a release whose formula is already in the tap has nothing to commit.
+          git diff --cached --quiet && exit 0
           git commit -m "nametrail $version"
           git push
