@@ -1,0 +1,152 @@
+name: release
+
+# A pushed tag v<version> builds the binaries, checksums and attests them, and creates the release.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Tag, Cargo.toml and plugin.json carry the same version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          plugin_version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' .claude-plugin/plugin.json | head -1)"
+          echo "tag=$tag cargo=$cargo_version plugin=$plugin_version"
+          [ "$tag" = "$cargo_version" ] && [ "$tag" = "$plugin_version" ]
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - run: cargo test --locked
+
+  build:
+    needs: verify
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/nametrail" dist/nametrail
+          tar -czf "nametrail-${{ matrix.target }}.tar.gz" -C dist nametrail
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nametrail-${{ matrix.target }}
+          path: nametrail-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        working-directory: artifacts
+        run: sha256sum nametrail-*.tar.gz > SHA256SUMS && cat SHA256SUMS
+      # Build provenance is only offered to public repositories on the free plan.
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        if: ${{ !github.event.repository.private }}
+        with:
+          subject-path: artifacts/nametrail-*.tar.gz
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+
+  # Writes Formula/nametrail.rb in <owner>/homebrew-tap so `brew install <owner>/tap/nametrail` works.
+  # Skipped until the HOMEBREW_TAP_TOKEN secret (a token that can push to that repository) is set.
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Update the formula
+        if: ${{ env.TAP_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          owner="${GITHUB_REPOSITORY%%/*}"
+          version="${GITHUB_REF_NAME#v}"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
+          sum() { awk -v f="nametrail-$1.tar.gz" '$2 == f { print $1 }' SHA256SUMS; }
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/$owner/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/nametrail.rb <<EOF
+          class Nametrail < Formula
+            desc "Code search for AI coding agents across repositories and languages"
+            homepage "https://github.com/$GITHUB_REPOSITORY"
+            version "$version"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "$base/nametrail-aarch64-apple-darwin.tar.gz"
+                sha256 "$(sum aarch64-apple-darwin)"
+              end
+              on_intel do
+                url "$base/nametrail-x86_64-apple-darwin.tar.gz"
+                sha256 "$(sum x86_64-apple-darwin)"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "$base/nametrail-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "$(sum aarch64-unknown-linux-gnu)"
+              end
+              on_intel do
+                url "$base/nametrail-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "$(sum x86_64-unknown-linux-gnu)"
+              end
+            end
+
+            def install
+              bin.install "nametrail"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/nametrail --version")
+            end
+          end
+          EOF
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/nametrail.rb
+          git commit -m "nametrail $version"
+          git push

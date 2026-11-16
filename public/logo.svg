@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="nametrail">
+  <title>nametrail</title>
+  <!-- A winding dotted trail that ends at a map pin: following a name to where it lives. -->
+  <path d="M40,214 C90,214 70,150 120,150 C170,150 150,104 180,96" fill="none" stroke="#EA580C" stroke-width="16" stroke-linecap="round" stroke-dasharray="0 30"/>
+  <path fill="#FBBF24" fill-rule="evenodd" d="M188,118 C188,118 152,78 152,52 A36,36 0 1 1 224,52 C224,78 188,118 188,118 Z M188,38 A14,14 0 1 0 188,66 A14,14 0 1 0 188,38 Z"/>
+</svg>
